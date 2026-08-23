@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: finwise
+      MYSQL_USER: finwise
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-finwise123}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://finwise:${MYSQL_PASSWORD:-finwise123}@db:3306/finwise
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-32chars}
+      REFRESH_SECRET_KEY: ${REFRESH_SECRET_KEY:-change-me-refresh-32chars}
+      OCR_PROVIDER: ${OCR_PROVIDER:-mock}
+      TESSERACT_CMD: /usr/bin/tesseract
+      FRONTEND_URL: http://localhost:3000
+    ports:
+      - "8000:8000"
+    volumes:
+      - uploads:/app/uploads
+    command: >
+      sh -c "python seed.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  frontend:
+    build: ./frontend
+    restart: always
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  mysql_data:
+  uploads:

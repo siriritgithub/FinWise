@@ -1,0 +1,10 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import api from "../lib/api";
+import toast from "react-hot-toast";
+
+export default function ForgotPassword(){
+  const [email,setEmail]=useState(""); const [loading,setLoading]=useState(false); const [link,setLink]=useState("");
+  const submit=async(e:React.FormEvent)=>{e.preventDefault();setLoading(true);try{const r=await api.post("/auth/forgot-password",{email});setLink(r.data?.reset_link||"");toast.success("If the account exists, a reset link has been generated.")}catch(err:any){toast.error(err?.response?.data?.detail||"Unable to create reset link")}finally{setLoading(false)}};
+  return <div className="min-h-screen bg-[#060b16] text-white flex items-center justify-center p-6"><div className="w-full max-w-md rounded-[2rem] border border-white/10 bg-[#0d1628] p-8 shadow-2xl shadow-black/40"><Link to="/" className="text-2xl font-black">Fin<span className="text-cyan-300">Wise</span></Link><p className="mt-8 text-xs font-semibold uppercase tracking-[.18em] text-blue-300">Account recovery</p><h1 className="mt-2 text-2xl font-bold">Forgot your password?</h1><p className="mt-2 mb-7 text-sm leading-6 text-slate-400">Enter your email and FinWise will generate a secure reset flow.</p><form onSubmit={submit} className="space-y-4"><div><label className="auth-label">Email</label><div className="auth-input-wrap"><input className="auth-input" type="email" required value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"/></div></div><button disabled={loading} className="auth-primary w-full">{loading?"Generating...":"Send reset link"}</button></form>{link&&<div className="mt-5 rounded-xl border border-blue-400/20 bg-blue-400/10 p-4 text-xs text-blue-100"><p className="font-semibold">Local development reset link</p><a className="mt-1 block break-all underline" href={link}>{link}</a><p className="mt-2 text-blue-200/70">In production, deliver this token by email instead of showing it here.</p></div>}<p className="mt-6 text-center text-sm text-slate-500"><Link className="font-semibold text-blue-300" to="/login">Back to sign in</Link></p></div></div>
+}
