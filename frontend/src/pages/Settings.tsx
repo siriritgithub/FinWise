@@ -38,7 +38,7 @@ export default function Settings() {
   const saveMutation=useMutation({
     mutationFn: async()=>{
       const payload={...form, monthly_salary:form.monthly_salary===""?null:Number(form.monthly_salary), date_of_birth:form.date_of_birth||null};
-      const response=await api.put("/users/me",payload);
+      await api.put("/users/me", payload);
       if(photoFile){ const fd=new FormData(); fd.append("file",photoFile); await api.post("/users/me/profile-photo",fd,{headers:{"Content-Type":"multipart/form-data"}}); }
       return api.get("/users/me");
     },

@@ -8,7 +8,7 @@ import toast from "react-hot-toast";
 import api from "../lib/api";
 import { formatINR } from "../lib/utils";
 import type { Subscription, Receipt, Category } from "../types";
-import { useAuthStore } from "../store/authStore";
+//import { useAuthStore } from "../store/authStore";
 
 export function Subscriptions() {
   const qc = useQueryClient();
