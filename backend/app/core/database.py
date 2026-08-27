@@ -9,6 +9,7 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_recycle=3600,
     echo=False,
+    connect_args={"ssl": {}},
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

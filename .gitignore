@@ -47,3 +47,10 @@ htmlcov/
 # Logs
 *.log
 finwise_backup.sql
+
+# Local database backup/import files
+finwise_clean.sql
+finwise_import.sql
+finwise_import2.sql
+finwise_import_fixed.sql
+backend/Dockerfile.save
