@@ -2399,13 +2399,24 @@ chat_router = APIRouter(prefix="/chat", tags=["chat"])
 
 @chat_router.get("/status")
 def chat_status():
-    """Return Ollama connectivity status for the frontend indicator."""
+    """Return AI provider connectivity status for the frontend indicator."""
+    provider = (settings.LLM_PROVIDER or "ollama").lower()
+    if provider == "groq":
+        from app.services.llm import check_groq_status
+        online = check_groq_status()
+        return {
+            "ollama_enabled": False,
+            "ollama_online": online,
+            "model": settings.GROQ_MODEL,
+            "provider": "groq",
+        }
     from app.services.llm import check_ollama_status
     online = check_ollama_status()
     return {
         "ollama_enabled": settings.OLLAMA_ENABLED,
         "ollama_online": online,
         "model": settings.OLLAMA_MODEL,
+        "provider": "ollama",
     }
 
 

@@ -1370,6 +1370,196 @@ def check_ollama_status() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# GROQ STATUS CHECK
+# ---------------------------------------------------------------------------
+
+def check_groq_status() -> bool:
+    """Return True if GROQ_API_KEY is set and the Groq API is reachable."""
+    if not settings.GROQ_API_KEY:
+        return False
+    try:
+        with httpx.Client(timeout=5) as client:
+            r = client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
+            )
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# GROQ TOOL-CALLING ENGINE
+# ---------------------------------------------------------------------------
+
+def _call_groq_with_tools(
+    db: Session,
+    uid: int,
+    message: str,
+    history: list,
+) -> dict:
+    """
+    Groq tool-calling loop — mirrors _call_ollama_with_tools exactly.
+
+    Key differences from Ollama:
+    - Endpoint: https://api.groq.com/openai/v1/chat/completions
+    - Auth: Bearer token header
+    - tool_calls[].function.arguments is a JSON-encoded STRING (must json.loads)
+    - Tool result messages require tool_call_id matching the original call id
+    """
+    msgs = []
+    for item in (history or [])[-10:]:
+        if isinstance(item, dict) and item.get("role") in ("user", "assistant"):
+            content = item.get("content", "")
+            if content:
+                msgs.append({"role": item["role"], "content": str(content)})
+
+    msgs.append({"role": "user", "content": message})
+
+    payload = {
+        "model": settings.GROQ_MODEL,
+        "messages": [{"role": "system", "content": _SYSTEM_PROMPT}] + msgs,
+        "tools": OLLAMA_TOOLS,
+        "tool_choice": "auto",
+        "temperature": 0.1,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    with httpx.Client(timeout=120) as client:
+        resp = client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        if resp.status_code == 401:
+            return {
+                "answer_text": "The AI service could not authenticate. Please check the API key configuration.",
+                "data_summary": {}, "suggestions": [], "mutations": [],
+            }
+        if resp.status_code == 429:
+            return {
+                "answer_text": "The AI service is temporarily rate-limited. Please wait a moment and try again.",
+                "data_summary": {}, "suggestions": [], "mutations": [],
+            }
+        resp.raise_for_status()
+        data = resp.json()
+
+    msg_obj = data.get("choices", [{}])[0].get("message", {})
+    tool_calls = msg_obj.get("tool_calls") or []
+    mutations: list = []
+
+    # No tool calls — return text directly
+    if not tool_calls:
+        text = _clean(msg_obj.get("content", "").strip())
+        if not text:
+            raise RuntimeError("Groq returned empty response with no tool calls")
+        return {"answer_text": text, "data_summary": {}, "suggestions": [], "mutations": []}
+
+    # Execute tool calls
+    tool_results = []
+    assistant_tool_calls = []  # for the follow-up message
+
+    for call in tool_calls:
+        call_id = call.get("id", "")
+        fn = call.get("function", {})
+        tool_name = fn.get("name", "")
+        raw_args = fn.get("arguments", {})
+
+        # Groq returns arguments as a JSON string — Ollama may return a dict
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args)
+            except Exception:
+                args = {}
+        else:
+            args = raw_args
+
+        assistant_tool_calls.append({
+            "id": call_id,
+            "type": "function",
+            "function": {"name": tool_name, "arguments": fn.get("arguments", "{}")},
+        })
+
+        # Safety validation
+        err = _validate_tool_call(tool_name, args, message)
+        if err:
+            tool_results.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps({"error": err, "blocked": True}),
+            })
+            continue
+
+        try:
+            result = _execute_tool(db, uid, tool_name, args, message)
+        except Exception as exc:
+            db.rollback()
+            result = {"error": str(exc)}
+
+        if isinstance(result, dict):
+            mutations.extend(result.get("mutations", []))
+            if result.get("pending_confirmation"):
+                return {
+                    "answer_text": result["message"],
+                    "data_summary": {}, "suggestions": [], "mutations": [],
+                }
+
+        tool_results.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": json.dumps(result, default=str),
+        })
+
+    # Follow-up call with tool results
+    follow_up_msgs = (
+        [{"role": "system", "content": _SYSTEM_PROMPT}]
+        + msgs
+        + [{"role": "assistant", "content": None, "tool_calls": assistant_tool_calls}]
+        + tool_results
+    )
+
+    follow_payload = {
+        "model": settings.GROQ_MODEL,
+        "messages": follow_up_msgs,
+        "temperature": 0.1,
+    }
+
+    with httpx.Client(timeout=120) as client:
+        resp2 = client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            json=follow_payload,
+            headers=headers,
+        )
+        if resp2.status_code == 429:
+            return {
+                "answer_text": "The AI service is temporarily rate-limited. Please wait a moment and try again.",
+                "data_summary": {}, "suggestions": [], "mutations": list(set(mutations)),
+            }
+        resp2.raise_for_status()
+        data2 = resp2.json()
+
+    text = _clean(data2.get("choices", [{}])[0].get("message", {}).get("content", "").strip())
+    if not text:
+        if tool_results:
+            try:
+                result_data = json.loads(tool_results[0]["content"])
+                text = _summarize_tool_result("", result_data)
+            except Exception:
+                text = "I retrieved your financial data but could not generate a response."
+
+    return {
+        "answer_text": text,
+        "data_summary": {},
+        "suggestions": [],
+        "mutations": list(set(mutations)),
+    }
+
+
+# ---------------------------------------------------------------------------
 # SYSTEM PROMPT
 # ---------------------------------------------------------------------------
 _SYSTEM_PROMPT = """You are FinWise AI, a privacy-first personal finance assistant for Indian users.
@@ -1756,7 +1946,54 @@ def answer_with_llm(
 
     resolved_message = _resolve_context(message, history)
 
-    if settings.OLLAMA_ENABLED:
+    provider = getattr(settings, "LLM_PROVIDER", "ollama")
+
+    # ------------------------------------------------------------------
+    # GROQ PATH
+    # ------------------------------------------------------------------
+    if provider == "groq":
+        try:
+            return _call_groq_with_tools(db, uid, resolved_message, history)
+        except Exception as exc:
+            import traceback
+            print("=" * 80)
+            print("CHAT ERROR (groq):", repr(exc))
+            traceback.print_exc()
+            print("=" * 80)
+            err_str = str(exc)
+            if "401" in err_str or "unauthorized" in err_str.lower():
+                return {
+                    "answer_text": (
+                        "The AI service rejected the request due to an invalid API key. "
+                        "Please check GROQ_API_KEY in your environment settings."
+                    ),
+                    "data_summary": {},
+                    "suggestions": [],
+                    "mutations": [],
+                }
+            if "429" in err_str or "rate limit" in err_str.lower():
+                return {
+                    "answer_text": (
+                        "The AI service is temporarily rate-limited. Please try again in a moment."
+                    ),
+                    "data_summary": {},
+                    "suggestions": [],
+                    "mutations": [],
+                }
+            return {
+                "answer_text": (
+                    "The AI assistant encountered an error and did not modify any data. "
+                    "Please try again."
+                ),
+                "data_summary": {},
+                "suggestions": [],
+                "mutations": [],
+            }
+
+    # ------------------------------------------------------------------
+    # OLLAMA PATH (unchanged from before)
+    # ------------------------------------------------------------------
+    if provider == "ollama" and settings.OLLAMA_ENABLED:
         try:
             return _call_ollama_with_tools(db, uid, resolved_message, history)
         except httpx.ConnectError:
@@ -1772,15 +2009,11 @@ def answer_with_llm(
                 "ollama_offline": True,
             }
         except Exception as exc:
-            # ------------------------------------------------------------
-            # DEBUG — remove once diagnosed
-            # ------------------------------------------------------------
             import traceback
             print("=" * 80)
-            print("CHAT ERROR:", repr(exc))
+            print("CHAT ERROR (ollama):", repr(exc))
             traceback.print_exc()
             print("=" * 80)
-            # ------------------------------------------------------------
             err_str = str(exc)
             if "connect" in err_str.lower() or "refused" in err_str.lower():
                 return {
@@ -1803,10 +2036,14 @@ def answer_with_llm(
                 "mutations": [],
             }
 
+    # ------------------------------------------------------------------
+    # NOTHING ENABLED
+    # ------------------------------------------------------------------
     return {
         "answer_text": (
-            "The local AI assistant is currently disabled. "
-            "Set OLLAMA_ENABLED=true in backend/.env and ensure Ollama is running."
+            "The AI assistant is currently disabled. "
+            "Set LLM_PROVIDER=groq with a valid GROQ_API_KEY, "
+            "or LLM_PROVIDER=ollama with OLLAMA_ENABLED=true and Ollama running."
         ),
         "data_summary": {},
         "suggestions": [],
