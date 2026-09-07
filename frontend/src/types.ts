@@ -156,6 +156,8 @@ export interface ChatResponse {
   response?: string;
   data_summary?: Record<string, unknown>;
   suggestions: string[];
+  mutations?: string[];
+  ollama_offline?: boolean;
 }
 
 export interface DashboardSummary {
