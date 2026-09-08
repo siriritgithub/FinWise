@@ -726,3 +726,36 @@ class AuditLog(Base):
         "User",
         back_populates="audit_logs"
     )
+
+
+# =========================================================
+# CONVERSATION
+# =========================================================
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=True, default=None)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    user = relationship("User")
+    messages = relationship("ChatMessage", back_populates="conversation", cascade="all, delete-orphan", order_by="ChatMessage.created_at")
+
+
+# =========================================================
+# CHAT MESSAGE
+# =========================================================
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(20), nullable=False)  # "user" or "assistant"
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    conversation = relationship("Conversation", back_populates="messages")

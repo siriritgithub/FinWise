@@ -8,7 +8,6 @@ from typing import List, Optional
 from decimal import Decimal
 import os, shutil, uuid
 from datetime import date, datetime, timedelta
-
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.config import get_settings
@@ -2420,6 +2419,88 @@ def chat_status():
     }
 
 
+@chat_router.get("/conversations")
+def list_conversations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.models import Conversation, ChatMessage as ChatMessageModel
+    convs = (
+        db.query(Conversation)
+        .filter(Conversation.user_id == current_user.id)
+        .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
+        .limit(50)
+        .all()
+    )
+    result = []
+    for c in convs:
+        last = (
+            db.query(ChatMessageModel)
+            .filter(ChatMessageModel.conversation_id == c.id)
+            .order_by(ChatMessageModel.id.desc())
+            .first()
+        )
+        result.append({
+            "id": c.id,
+            "title": c.title,
+            "updated_at": c.updated_at,
+            "last_message": (last.content[:80] if last else None),
+        })
+    return result
+
+
+@chat_router.post("/conversations", status_code=201)
+def create_conversation(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.models import Conversation
+    conv = Conversation(user_id=current_user.id, title=None)
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return {"id": conv.id}
+
+
+@chat_router.get("/conversations/{conversation_id}/messages")
+def get_conversation_messages(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.models import Conversation, ChatMessage as ChatMessageModel
+    conv = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user.id,
+    ).first()
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    msgs = (
+        db.query(ChatMessageModel)
+        .filter(ChatMessageModel.conversation_id == conversation_id)
+        .order_by(ChatMessageModel.id.asc())
+        .all()
+    )
+    return [{"id": m.id, "role": m.role, "content": m.content, "created_at": m.created_at} for m in msgs]
+
+
+@chat_router.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.models import Conversation
+    conv = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user.id,
+    ).first()
+    if not conv:
+        raise HTTPException(404, "Conversation not found")
+    db.delete(conv)
+    db.commit()
+
+
 @chat_router.post("")
 def chat(
     body: ChatRequest,
@@ -2427,7 +2508,51 @@ def chat(
     current_user: User = Depends(get_current_user),
 ):
     from app.services.llm import answer_with_llm
+    from app.models.models import Conversation, ChatMessage as ChatMessageModel
 
-    history = [m.model_dump() for m in body.history]
+    
+    # Resolve or create conversation
+    if body.conversation_id is not None:
+        conv = db.query(Conversation).filter(
+            Conversation.id == body.conversation_id,
+            Conversation.user_id == current_user.id,
+        ).first()
+        if not conv:
+            raise HTTPException(404, "Conversation not found")
+    else:
+        title = body.message.strip()[:40]
+        if len(body.message.strip()) > 40:
+            title += "..."
+        conv = Conversation(user_id=current_user.id, title=title)
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+
+    # Load history from DB (last 20 messages)
+    past = (
+    db.query(ChatMessageModel)
+    .filter(ChatMessageModel.conversation_id == conv.id)
+    .order_by(ChatMessageModel.id.desc())
+    .limit(20)
+    .all()
+    )
+    past.reverse()
+    history = [{"role": m.role, "content": m.content} for m in past]
+
+    # Save user message
+    db.add(ChatMessageModel(conversation_id=conv.id, role="user", content=body.message))
+    db.commit()
+
+    # Call AI
     result = answer_with_llm(db, current_user.id, body.message, history)
+
+    # Save assistant reply
+    answer = result.get("answer_text", "")
+    db.add(ChatMessageModel(conversation_id=conv.id, role="assistant", content=answer))
+
+    # Update conversation timestamp
+    conv.updated_at = datetime.utcnow()
+    db.commit()
+
+    result["conversation_id"] = conv.id
     return result

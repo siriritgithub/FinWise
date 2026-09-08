@@ -17,20 +17,39 @@ from decimal import Decimal
 # CHAT
 # =========================================================
 
-class ChatMessage(BaseModel):
+class ChatHistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
 
 
 class ChatRequest(BaseModel):
     message: str
-    history: List[ChatMessage] = Field(
-        default_factory=list
-    )
+    history: List[ChatHistoryMessage] = Field(default_factory=list)
+    conversation_id: Optional[int] = None
 
 
 class ChatResponse(BaseModel):
     response: str
+
+
+class ConversationOut(BaseModel):
+    id: int
+    title: Optional[str] = None
+    updated_at: datetime
+    last_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ChatMessageOut(BaseModel):
+    id: int
+    role: str
+    content: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 # =========================================================
